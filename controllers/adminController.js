@@ -9,6 +9,8 @@ const Expense = require("../models/subAdminExpenses");
 const Analytics = require("../models/SubadminAnalytics");
 const nodemailer = require("nodemailer");
 const crypto = require('crypto');
+const redisClient = require("../config/redisClient");
+
 
 // const Expense = require("../models/Expense");
 
@@ -45,40 +47,77 @@ const registerAdmin = async (req, res) => {
 };
 
 // ✅ Sub-Admin Login
+// const adminLogin = async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+
+//     // Check if admin exists
+//     const admin = await Admin.findOne({ email });
+//     if (!admin) return res.status(404).json({ message: "Admin not found" });
+
+//     // ✅ Check if blocked
+//     if (admin.status === "Blocked") {
+//       return res
+//         .status(403)
+//         .json({ message: "Your account is blocked. Contact admin." });
+//     }
+
+  
+
+//     // ✅ Compare hashed password with entered password
+//     const isMatch = await bcrypt.compare(password, admin.password);
+//     if (!isMatch)
+//       return res.status(401).json({ message: "Invalid credentials" });
+
+//     // ✅ Generate JWT token
+//     const token = jwt.sign(
+//       { id: admin._id, role: "admin" },
+//       process.env.JWT_SECRET,
+//       { expiresIn: "10d" }
+//     );
+
+//     res.status(200).json({ message: "Login successful!", token ,id:admin._id});
+//   } catch (error) {
+//     res.status(500).json({ message: "Server Error" });
+//   }
+// };
+
 const adminLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Check if admin exists
     const admin = await Admin.findOne({ email });
     if (!admin) return res.status(404).json({ message: "Admin not found" });
 
-    // ✅ Check if blocked
     if (admin.status === "Blocked") {
       return res
         .status(403)
         .json({ message: "Your account is blocked. Contact admin." });
     }
 
-  
-
-    // ✅ Compare hashed password with entered password
     const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch)
       return res.status(401).json({ message: "Invalid credentials" });
 
-    // ✅ Generate JWT token
     const token = jwt.sign(
       { id: admin._id, role: "admin" },
       process.env.JWT_SECRET,
       { expiresIn: "10d" }
     );
 
-    res.status(200).json({ message: "Login successful!", token ,id:admin._id});
+    // ✅ Store token in Redis (key: admin ID, value: token)
+    await redisClient.set(`admin-token:${admin._id}`, token, {
+      EX: 864000, // 10 days in seconds
+    });
+
+    res
+      .status(200)
+      .json({ message: "Login successful!", token, id: admin._id });
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
   }
 };
+
 
 const totalSubAdminCount = async (req, res) => {
   try {
@@ -259,6 +298,9 @@ const updateSubAdmin = async (req, res) => {
   try {
     const { name, email, password, role, phone, status, profileImage } =
       req.body;
+
+
+      console.log("we afre in update subAdmon",name, email, password, role, phone, status, profileImage)
     const subAdminId = req.params.id;
 
     // Check if email is being changed and if it already exists
@@ -274,6 +316,8 @@ const updateSubAdmin = async (req, res) => {
         });
       }
     }
+
+    console.log("Data is updated", req.body);
 
     // Prepare update data
     const updateData = {

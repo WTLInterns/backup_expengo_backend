@@ -1,22 +1,21 @@
+
 const express = require("express");
 const router = express.Router();
-const upload = require("../middleware/uploadMiddleware"); // ✅ Correct import
+const upload = require("../middleware/uploadMiddleware");
 const { registerUser, loginUser } = require("../controllers/loginController");
-const { authMiddleware, isAdmin } = require("../middleware/authMiddleware");
+const { authMiddleware } = require("../middleware/authMiddleware");
 
-// Public routes
-router.post(
-    "/register",
-    authMiddleware,
-    upload.fields([
-      { name: "profileImage", maxCount: 1 },
-      { name: "licenseNoImage", maxCount: 1 },
-      { name: "adharNoImage", maxCount: 1 },
-    ]),
-    registerUser
-  );
-  
-// router.post("/login",authMiddleware,isAdmin, loginUser);
 router.post("/login", loginUser);
+
+router.post(
+  "/register",
+  authMiddleware,
+  upload.fields([
+    { name: "profileImage", maxCount: 1 },
+    { name: "licenseNoImage", maxCount: 1 },
+    { name: "adharNoImage", maxCount: 1 },
+  ]),
+  registerUser
+);
 
 module.exports = router;

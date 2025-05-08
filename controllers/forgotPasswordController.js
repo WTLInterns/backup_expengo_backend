@@ -1,6 +1,8 @@
+
 const Driver = require("../models/loginModel");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
+const redisClient = require("../config/redisClient"); 
 require("dotenv").config();
 
 // ✅ Configure Nodemailer
@@ -20,7 +22,13 @@ const sendResetOTP = async (req, res) => {
   }
 
   try {
-    const user = await Driver.findOne({ email }); // 🔥 FIXED: Changed "User" to "Driver"
+    // Check if OTP is cached in Redis
+    const cachedOTP = await redisClient.get(email);
+    if (cachedOTP) {
+      return res.status(400).json({ message: "An OTP has already been sent recently. Please wait before requesting another." });
+    }
+
+    const user = await Driver.findOne({ email });
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -34,7 +42,9 @@ const sendResetOTP = async (req, res) => {
     user.otpExpiry = otpExpiry;
     await user.save();
 
- 
+    // Cache OTP in Redis with an expiry time (3 minutes)
+    await redisClient.set(email, otp, 'EX', 180);
+
     // ✅ Send Email
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -45,17 +55,15 @@ const sendResetOTP = async (req, res) => {
 
     transporter.sendMail(mailOptions, (error, info) => {
       if (error) {
-         return res.status(500).json({ message: "Failed to send OTP" });
+        return res.status(500).json({ message: "Failed to send OTP" });
       } else {
-         return res.status(200).json({ message: "OTP sent successfully" });
+        return res.status(200).json({ message: "OTP sent successfully" });
       }
     });
   } catch (error) {
-     return res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
-
-
 
 // ✅ Verify OTP
 const verifyOTP = async (req, res) => {
@@ -82,7 +90,6 @@ const verifyOTP = async (req, res) => {
   }
 };
 
-
 // ✅ Change Password after OTP Verification
 const changePassword = async (req, res) => {
   const { email, otp, newPassword } = req.body;
@@ -97,8 +104,9 @@ const changePassword = async (req, res) => {
       return res.status(404).json({ message: "Driver not found" });
     }
 
-    // ✅ Validate OTP
-    if (driver.resetOTP !== parseInt(otp) || Date.now() > driver.otpExpiry) {
+    // ✅ Validate OTP from Redis cache
+    const cachedOTP = await redisClient.get(email);
+    if (!cachedOTP || cachedOTP !== otp.toString()) {
       return res.status(400).json({ message: "Invalid or expired OTP" });
     }
 
@@ -108,10 +116,13 @@ const changePassword = async (req, res) => {
     driver.otpExpiry = null;
     await driver.save();
 
+    // Delete OTP from Redis
+    await redisClient.del(email);
+
     res.status(200).json({ message: "Password changed successfully" });
 
   } catch (error) {
-     res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error" });
   }
 };
 

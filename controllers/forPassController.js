@@ -1,11 +1,10 @@
-
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
-const { Resend } = require("resend"); // ✅ Correct import
+const { Resend } = require("resend"); 
 const User = require("../models/Admin");
 require("dotenv").config();
+const redisClient = require("../config/redisClient");
 
-const resend = new Resend(process.env.RESEND_API_KEY); // ✅ Instance
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Generate a random 6-digit OTP
 const generateOTP = () => {
@@ -28,14 +27,10 @@ const sendOTP = async (req, res) => {
     const otp = generateOTP();
 
     // Set OTP expiry to 10 minutes from now
-    const otpExpiry = new Date();
-    otpExpiry.setMinutes(otpExpiry.getMinutes() + 10);
+    const otpExpiry = 600; 
 
-    // Save OTP and expiry
-    await User.findByIdAndUpdate(user._id, {
-      resetOTP: otp,
-      resetOTPExpiry: otpExpiry,
-    });
+    // Save OTP in Redis with an expiry of 10 minutes
+    await redisClient.setex(`otp:${email}`, otpExpiry, otp);
 
     // Send OTP email
     await resend.emails.send({
@@ -55,7 +50,7 @@ const sendOTP = async (req, res) => {
             ${otp}
           </div>
           <p style="color: #555; font-size: 16px;">
-            <strong >Note:</strong> This OTP will expire in <strong>2 minutes</strong>.
+            <strong >Note:</strong> This OTP will expire in <strong>10 minutes</strong>.
           </p>
           <p style="color: #999; font-size: 14px; margin-top: 30px;">
             If you didn’t request this, please ignore this email. For further assistance, feel free to reach out to our support team.
@@ -68,76 +63,76 @@ const sendOTP = async (req, res) => {
         </div>
       `,
     });
-    
 
     return res.status(200).json({ message: "OTP sent successfully to your email" });
   } catch (error) {
+    console.error(error);
     return res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
 // Verify OTP
 const verifyOTP = async (req, res) => {
-  const { email, otp } = req.body
+  const { email, otp } = req.body;
 
   if (!email || !otp) {
-    return res.status(400).json({ message: "Email and OTP are required" })
+    return res.status(400).json({ message: "Email and OTP are required" });
   }
 
   try {
-    const user = await User.findOne({ email })
-    if (!user) {
-      return res.status(404).json({ message: "User not found" })
+    // Check if OTP exists in Redis
+    const storedOTP = await redisClient.get(`otp:${email}`);
+    if (!storedOTP) {
+      return res.status(400).json({ message: "OTP expired or not found. Please request a new one." });
     }
 
-    // Check if OTP matches and is not expired
-    if (user.resetOTP !== otp) {
-      return res.status(400).json({ message: "Invalid OTP" })
+    // Check if OTP matches
+    if (storedOTP !== otp) {
+      return res.status(400).json({ message: "Invalid OTP" });
     }
 
-    if (new Date() > new Date(user.resetOTPExpiry)) {
-      return res.status(400).json({ message: "OTP has expired. Please request a new one." })
-    }
-
-    // OTP is valid, allow user to reset password
-    return res.status(200).json({ message: "OTP verified successfully" })
+    // OTP is valid
+    return res.status(200).json({ message: "OTP verified successfully" });
   } catch (error) {
-    return res.status(500).json({ message: "Internal Server Error" })
+    console.error(error);
+    return res.status(500).json({ message: "Internal Server Error" });
   }
-}
+};
 
 // Reset Password
 const resetPassword = async (req, res) => {
-  const { email, password } = req.body
+  const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ message: "Email and password are required" })
+    return res.status(400).json({ message: "Email and password are required" });
   }
 
   try {
-    const user = await User.findOne({ email })
+    const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ message: "User not found" })
+      return res.status(404).json({ message: "User not found" });
     }
 
     // Hash the new password
-    const hashedPassword = await bcrypt.hash(password, 12)
+    const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Update password and clear OTP fields
+    // Update password
     await User.findByIdAndUpdate(
       user._id,
       {
         password: hashedPassword,
-        resetOTP: null,
-        resetOTPExpiry: null,
       },
-      { new: true },
-    )
+      { new: true }
+    );
 
-    return res.status(200).json({ message: "Password reset successful" })
+    // Remove OTP from Redis after password reset
+    await redisClient.del(`otp:${email}`);
+
+    return res.status(200).json({ message: "Password reset successful" });
   } catch (error) {
-    return res.status(500).json({ message: "Internal Server Error" })
+    console.error(error);
+    return res.status(500).json({ message: "Internal Server Error" });
   }
-}
+};
 
-module.exports = { sendOTP, verifyOTP, resetPassword }
+module.exports = { sendOTP, verifyOTP, resetPassword };

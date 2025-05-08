@@ -1,18 +1,22 @@
 const bcrypt = require('bcryptjs');
-const MasterAdmin = require('../models/masterAdmin');  // Correct the model to MasterAdmin
-const SubAdmin = require('../models/Admin');
+const MasterAdmin = require('../models/masterAdmin');
 const { Resend } = require("resend");
 const Driver = require("../models/loginModel");
 const CabDetails = require("../models/CabsDetails");
 const CabAssigned = require("../models/CabAssignment");
+const redisClient = require("../config/redisClient"); 
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Generate 6-digit OTP
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
 
 // Register Master Admin (not regular admin)
 exports.registerMasterAdmin = async (req, res) => {
     try {
         const { name, email, password } = req.body;
-        // const masterAdminId = mongoose.Types.ObjectId('67d9d463bab97703a18d886d'); 
 
         // Check if Master Admin already exists
         let existingMasterAdmin = await MasterAdmin.findOne({ email });
@@ -20,7 +24,7 @@ exports.registerMasterAdmin = async (req, res) => {
 
         // Hash the password before saving
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newMasterAdmin = new MasterAdmin({ name, email, password: hashedPassword});
+        const newMasterAdmin = new MasterAdmin({ name, email, password: hashedPassword });
 
         await newMasterAdmin.save();
 
@@ -49,12 +53,6 @@ exports.adminLogin = async (req, res) => {
     }
 };
 
-// Generate 6-digit OTP
-const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-  };
-  
-
 // 📩 Send OTP
 exports.sendOTP = async (req, res) => {
   const { email } = req.body;
@@ -66,14 +64,11 @@ exports.sendOTP = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const otp = generateOTP();
-
     const expiry = new Date();
     expiry.setMinutes(expiry.getMinutes() + 10); // 10 mins validity
 
-    await MasterAdmin.findByIdAndUpdate(user._id, {
-      resetOTP: otp,
-      resetOTPExpiry: expiry,
-    });
+    // Store OTP in Redis with an expiration time of 10 minutes
+    await redisClient.setEx(`otp:${email}`, 600, otp); // OTP stored with 600 seconds expiry
 
     await resend.emails.send({
       from: `"WTL Tourism Pvt. Ltd." <contact@worldtriplink.com>`,
@@ -99,18 +94,17 @@ exports.sendOTP = async (req, res) => {
 exports.verifyOTP = async (req, res) => {
   const { email, otp } = req.body;
 
-  if (!email || !otp)
-    return res.status(400).json({ message: "Email and OTP are required" });
+  if (!email || !otp) return res.status(400).json({ message: "Email and OTP are required" });
 
   try {
     const user = await MasterAdmin.findOne({ email });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (user.resetOTP !== otp)
-      return res.status(400).json({ message: "Invalid OTP" });
+    // Retrieve OTP from Redis
+    const storedOTP = await redisClient.get(`otp:${email}`);
 
-    if (new Date() > user.resetOTPExpiry)
-      return res.status(400).json({ message: "OTP has expired" });
+    if (!storedOTP) return res.status(400).json({ message: "OTP expired or not found. Please request a new one" });
+    if (storedOTP !== otp) return res.status(400).json({ message: "Invalid OTP" });
 
     return res.status(200).json({ message: "OTP verified successfully" });
   } catch (err) {
@@ -122,8 +116,7 @@ exports.verifyOTP = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password)
-    return res.status(400).json({ message: "Email and password are required" });
+  if (!email || !password) return res.status(400).json({ message: "Email and password are required" });
 
   try {
     const user = await MasterAdmin.findOne({ email });
@@ -137,31 +130,30 @@ exports.resetPassword = async (req, res) => {
       resetOTPExpiry: null,
     });
 
+    // Remove OTP from Redis after password reset
+    await redisClient.del(`otp:${email}`);
+
     return res.status(200).json({ message: "Password reset successful" });
   } catch (err) {
     return res.status(500).json({ message: "Internal Server Error" });
   }
-  
 };
 
-exports.getCabDetails =  async (req, res) => {
+exports.getCabDetails = async (req, res) => {
   try {
-      const adminId = req.query.admin;// Get logged-in admin's
+    const adminId = req.query.admin; // Get logged-in admin's ID
 
-      // Fetch only drivers assigned to this admin
-      const drivers = await Driver.find({ addedBy: adminId });
-      const cabs = await CabDetails.find({ addedBy: adminId });
-      const assignedCabs = await CabAssigned.find({assignedBy: adminId });
+    // Fetch only drivers assigned to this admin
+    const drivers = await Driver.find({ addedBy: adminId });
+    const cabs = await CabDetails.find({ addedBy: adminId });
+    const assignedCabs = await CabAssigned.find({ assignedBy: adminId });
 
-      res.status(200).json({
-       
-          totalDrivers: drivers.length,
-       
-          totalCabs: cabs.length,
-
-          totalCabAssigned :assignedCabs.length
-        });
-            } catch (error) {
-      res.status(500).json({ message: "Server Error", error: error.message });
+    res.status(200).json({
+      totalDrivers: drivers.length,
+      totalCabs: cabs.length,
+      totalCabAssigned: assignedCabs.length,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
   }
 };

@@ -1,13 +1,15 @@
 const Driver = require("../models/Driver");
-// const Driver = require ("../models/CabAssignment")
-// const Driver = require ("../models/CabsDetails")
-
+const redisClient = require("../config/redisClient");
 
 // Register Driver
 const registerDriver = async (req, res) => {
     try {
         const newDriver = new Driver(req.body);
         await newDriver.save();
+
+        // Optional: Cache the new driver
+        await redisClient.setEx(`driver:${newDriver._id}`, 3600, JSON.stringify(newDriver)); // expires in 1 hour
+
         res.status(201).json({ message: "Driver registered successfully", driver: newDriver });
     } catch (error) {
         res.status(500).json({ message: "Error registering driver", error });
@@ -30,13 +32,26 @@ const driverLogin = async (req, res) => {
     }
 };
 
-// Get Driver Details by ID
+// Get Driver Details by ID (with Redis cache)
 const getDriverDetails = async (req, res) => {
+    const { driverId } = req.params;
+
     try {
-        const driver = await Driver.findById(req.params.driverId);
+        // Check Redis cache
+        const cachedDriver = await redisClient.get(`driver:${driverId}`);
+        if (cachedDriver) {
+            return res.status(200).json(JSON.parse(cachedDriver));
+        }
+
+        // If not in cache, fetch from DB
+        const driver = await Driver.findById(driverId);
         if (!driver) {
             return res.status(404).json({ message: "Driver not found" });
         }
+
+        // Cache the driver data for next time (1 hour)
+        await redisClient.setEx(`driver:${driverId}`, 3600, JSON.stringify(driver));
+
         res.status(200).json(driver);
     } catch (error) {
         res.status(500).json({ message: "Error retrieving driver details", error });
